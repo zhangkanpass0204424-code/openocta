@@ -43,15 +43,20 @@ import { loadConfigSchema } from "./controllers/config.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import { gatewayWebSocketUrl } from "./gateway-url.ts";
+import { setGatewayHttpCredential } from "./gateway-http-auth.ts";
 import { GatewayBrowserClient } from "./gateway.ts";
 
 type GatewayHost = {
+  terminalAssistant?: import("./terminal-assistant-state.ts").TerminalAssistantController;
   settings: UiSettings;
   password: string;
   client: GatewayBrowserClient | null;
   connected: boolean;
   hello: GatewayHelloOk | null;
   lastError: string | null;
+  gatewayConnectionPending: boolean;
+  gatewayAuthRequired: boolean;
+  gatewayAuthError: string | null;
   onboarding?: boolean;
   eventLogBuffer: EventLogEntry[];
   eventLog: EventLogEntry[];
@@ -149,6 +154,11 @@ function applySessionDefaults(host: GatewayHost, defaults?: SessionDefaultsSnaps
 }
 
 export function connectGateway(host: GatewayHost) {
+  host.gatewayConnectionPending = true;
+  setGatewayHttpCredential(
+    host.settings.gatewayUrl,
+    host.password.trim() ? host.password : host.settings.token,
+  );
   host.lastError = null;
   host.hello = null;
   host.connected = false;
@@ -162,9 +172,21 @@ export function connectGateway(host: GatewayHost) {
     password: host.password.trim() ? host.password : undefined,
     clientName: "openclaw-control-ui",
     mode: "webchat",
+    onAuthRequired: (message) => {
+      host.gatewayConnectionPending = false;
+      host.gatewayAuthRequired = true;
+      host.gatewayAuthError = /未配置/.test(message)
+        ? "网关已启用密码登录，但尚未设置密码。请管理员先在配置中设置 gateway.auth.password。"
+        : host.password.trim()
+          ? "密码或令牌不正确，请重试。"
+          : null;
+    },
     onHello: (hello) => {
       host.connected = true;
+      host.gatewayConnectionPending = false;
       host.lastError = null;
+      host.gatewayAuthRequired = false;
+      host.gatewayAuthError = null;
       host.hello = hello;
       applySnapshot(host, hello);
       // Reset orphaned chat run state from before disconnect.
@@ -194,11 +216,20 @@ export function connectGateway(host: GatewayHost) {
     },
     onClose: ({ code, reason }) => {
       host.connected = false;
+      host.gatewayConnectionPending = code === 1012;
       stopApprovalsBannerPolling(host as unknown as OpenClawApp);
       resetApprovalsBannerState(host as unknown as OpenClawApp);
       // Code 1012 = Service Restart (expected during config saves, don't show as error)
       if (code !== 1012) {
         const r = (reason ?? "").trim();
+        if (code === 4008 && /认证失败|invalid_gateway_token/i.test(r)) {
+          host.gatewayAuthRequired = true;
+          host.gatewayAuthError = /未配置/.test(r)
+            ? "网关已启用密码登录，但尚未设置密码。请管理员先在配置中设置 gateway.auth.password。"
+            : host.password.trim()
+              ? "密码或令牌不正确，请重试。"
+              : null;
+        }
         if (r) {
           host.lastError = r;
         } else if (code === 1006) {
@@ -240,6 +271,7 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
       return;
     }
     const agentPayload = evt.payload as AgentEventPayload | undefined;
+    if (host.terminalAssistant?.receiveAgent(agentPayload?.sessionKey, agentPayload?.data?.phase as string | undefined)) return;
     handleAgentEvent(
       host as unknown as Parameters<typeof handleAgentEvent>[0],
       agentPayload,
@@ -262,6 +294,10 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
 
   if (evt.event === "chat") {
     const payload = evt.payload as ChatEventPayload | undefined;
+    if (host.terminalAssistant) {
+      host.terminalAssistant.syncConnection(host.client, host.connected);
+      if (host.terminalAssistant.receive(payload)) return;
+    }
     if (payload?.sessionKey) {
       setLastActiveSessionKey(
         host as unknown as Parameters<typeof setLastActiveSessionKey>[0],

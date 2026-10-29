@@ -26,6 +26,7 @@ import (
 	"github.com/openocta/openocta/pkg/gateway/handlers"
 	"github.com/openocta/openocta/pkg/gateway/protocol"
 	"github.com/openocta/openocta/pkg/gateway/swarmsvc"
+	gatewayterminal "github.com/openocta/openocta/pkg/gateway/terminal"
 	"github.com/openocta/openocta/pkg/gateway/ws"
 	initpkg "github.com/openocta/openocta/pkg/init"
 	"github.com/openocta/openocta/pkg/localagents"
@@ -86,17 +87,19 @@ func (w *httpTraceJSONLWriter) WriteHTTPTrace(ev *httpTraceEvent) error {
 
 // Server is the Gateway HTTP server.
 type Server struct {
-	addr       string
-	version    string
-	server     *http.Server
-	mux        *http.ServeMux
-	hub        *ws.Hub
-	ctx        *handlers.Context
-	mcpManager *mcp.Manager
-	distOnce   sync.Once
-	distDir    string
-	distErr    error
-	distFS     fs.FS // embedded frontend when used
+	addr              string
+	version           string
+	server            *http.Server
+	mux               *http.ServeMux
+	hub               *ws.Hub
+	ctx               *handlers.Context
+	terminalManager   *gatewayterminal.Manager
+	terminalHostStore *gatewayterminal.HostStore
+	mcpManager        *mcp.Manager
+	distOnce          sync.Once
+	distDir           string
+	distErr           error
+	distFS            fs.FS // embedded frontend when used
 }
 
 // isTruthyEnv returns true if the env var is set to a truthy value (1, true, yes).
@@ -192,8 +195,10 @@ func NewServer(addr string, version string) *Server {
 	//		mcpManager = mgr
 	//	}
 	//}
+	terminalManager := gatewayterminal.NewManager()
 	ctx := &handlers.Context{
 		Version:             version,
+		TerminalExecutor:    terminalManager,
 		GetStatusSummary:    func() (interface{}, error) { return handlers.DefaultStatusSummary(), nil },
 		LoadConfigSnapshot:  func() (*handlers.ConfigSnapshot, error) { return handlers.LoadConfigSnapshot(env) },
 		GetSessionStorePath: func() string { return filepath.Join(stateDir, "sessions") },
@@ -387,12 +392,18 @@ func NewServer(addr string, version string) *Server {
 	// 恢复上次处于运行状态的内嵌模型（manifest.json running=true）。
 	go embeddedmodels.RestoreRuntimeOnStartup(os.Getenv)
 
+	terminalHostStore, terminalHostStoreErr := gatewayterminal.NewHostStore(filepath.Join(stateDir, "terminal", "hosts.json"))
+	if terminalHostStoreErr != nil {
+		slog.Error("terminal hosts: failed to initialize store", "error", terminalHostStoreErr)
+	}
 	s := &Server{
-		addr:    addr,
-		version: version,
-		mux:     mux,
-		hub:     hub,
-		ctx:     ctx,
+		addr:              addr,
+		version:           version,
+		mux:               mux,
+		hub:               hub,
+		ctx:               ctx,
+		terminalManager:   terminalManager,
+		terminalHostStore: terminalHostStore,
 		//mcpManager: mcpManager,
 	}
 	s.registerRoutes()
@@ -444,6 +455,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("HEAD /.well-known/agent.json", s.handleWellKnownAgentJSON)
 	s.mux.HandleFunc("GET /health", s.requireGatewayToken(s.handleHealth))
 	s.mux.HandleFunc("GET /api/health", s.requireGatewayToken(s.handleHealth))
+	s.mux.HandleFunc("GET /api/terminal/hosts", s.requireGatewayToken(s.handleTerminalHostsList))
+	s.mux.HandleFunc("DELETE /api/terminal/hosts/{id}", s.requireGatewayToken(s.handleTerminalHostDelete))
+	s.mux.HandleFunc("POST /api/terminal/sessions", s.requireGatewayToken(s.handleTerminalSessionCreate))
+	s.mux.HandleFunc("GET /api/terminal/sessions/{id}/output", s.requireGatewayToken(s.handleTerminalSessionOutput))
+	s.mux.HandleFunc("POST /api/terminal/sessions/{id}/input", s.requireGatewayToken(s.handleTerminalSessionInput))
+	s.mux.HandleFunc("POST /api/terminal/sessions/{id}/resize", s.requireGatewayToken(s.handleTerminalSessionResize))
+	s.mux.HandleFunc("DELETE /api/terminal/sessions/{id}", s.requireGatewayToken(s.handleTerminalSessionDelete))
+	s.mux.HandleFunc("OPTIONS /api/terminal/", s.handleTerminalOptions)
 	s.mux.HandleFunc("POST /api/skills/upload", s.requireGatewayToken(s.handleSkillsUpload))
 	s.mux.HandleFunc("OPTIONS /api/skills/upload", handleSkillsAPIOptions)
 	s.mux.HandleFunc("POST /api/skills/analyze", s.requireGatewayToken(s.handleSkillsAnalyze))
@@ -770,6 +789,9 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.terminalManager != nil {
+		s.terminalManager.Close()
+	}
 	if s.mcpManager != nil {
 		_ = s.mcpManager.Close()
 		s.mcpManager = nil

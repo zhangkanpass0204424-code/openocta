@@ -18,9 +18,9 @@ func TestScrubTerminalOutput(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "removes Ctrl-U wrapper echo",
+			name:     "shows the AI command instead of the wrapper echo",
 			input:    string([]byte{0x15}) + "eval 'pwd'; printf '\\036__OO_DONE_test:0\\037' \"$0\"\n[root@localhost ~]# \n/root\n",
-			expected: "\n[root@localhost ~]# \n/root\n",
+			expected: "pwd\n[root@localhost ~]# \n/root\n",
 		},
 		{
 			name:     "removes completion markers",
@@ -97,9 +97,10 @@ func TestExecutionWaitsForMarkerAndRetainsShellState(t *testing.T) {
 	}
 }
 
-func TestExecutionTimeoutBlocksFurtherInput(t *testing.T) {
+func TestExecutionTimeoutReleasesInputAfterInterrupt(t *testing.T) {
 	m := NewManager()
-	s := &session{stdin: executionWriter{fn: func(string) {}}}
+	var writes []string
+	s := &session{stdin: executionWriter{fn: func(wire string) { writes = append(writes, wire) }}}
 	m.sessions["target"] = s
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -107,8 +108,13 @@ func TestExecutionTimeoutBlocksFurtherInput(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("%s %v", raw, err)
 	}
-	if err = m.Input("target", []byte("pwd\r")); !errors.Is(err, ErrExecutionUncertain) {
+	// After a timeout the human must regain control: the first keystroke
+	// interrupts the lingering command and is then delivered to the shell.
+	if err = m.Input("target", []byte("pwd\r")); err != nil {
 		t.Fatalf("unexpected input: %v", err)
+	}
+	if len(writes) < 3 || writes[len(writes)-2] != "\x03" || writes[len(writes)-1] != "pwd\r" {
+		t.Fatalf("expected interrupt followed by input, got %q", writes)
 	}
 }
 
@@ -117,8 +123,9 @@ func TestExecutionRejectsConcurrentInputAndReportsFailureExit(t *testing.T) {
 	s := &session{}
 	m.sessions["target"] = s
 	s.stdin = executionWriter{fn: func(wire string) {
-		if err := m.Input("target", []byte("unsafe")); !errors.Is(err, ErrSessionBusy) {
-			t.Errorf("input not blocked: %v", err)
+		// Input during execution should be rejected
+		if err := m.Input("target", []byte("unsafe")); err != ErrSessionBusy {
+			t.Errorf("input during execution should fail with ErrSessionBusy: %v", err)
 		}
 		marker := regexp.MustCompile(`__OO_DONE_[a-z0-9]+:`).FindString(wire)
 		s.Write([]byte("failure\n\x1e" + marker + "7\x1f\n"))

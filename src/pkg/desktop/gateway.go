@@ -63,11 +63,19 @@ func StartGateway() (*gatewayhttp.Server, error) {
 		logging.Warn("Gateway config load failed: %v", cfgErr)
 	}
 	var cfgMode *string
+	bind := ""
+	customBindHost := ""
 	if cfg != nil && cfg.Gateway != nil {
 		cfgMode = cfg.Gateway.Mode
+		if cfg.Gateway.Bind != nil {
+			bind = *cfg.Gateway.Bind
+		}
+		if cfg.Gateway.CustomBindHost != nil {
+			customBindHost = *cfg.Gateway.CustomBindHost
+		}
 	}
 	runMode := paths.ResolveRunMode(env, cfgMode)
-	addr := paths.ResolveGatewayAddr(DesktopPort, runMode)
+	addr := paths.ResolveGatewayAddrWithBind(DesktopPort, runMode, bind, customBindHost)
 
 	logging.Info("Desktop gateway starting addr=%s mode=%s version=%s", addr, runMode, version.Version)
 

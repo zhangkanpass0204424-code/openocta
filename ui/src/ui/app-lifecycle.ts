@@ -28,6 +28,7 @@ import {
 
 type LifecycleHost = {
   basePath: string;
+  activeWorkspace: "agents" | "terminal" | "knowledge";
   tab: Tab;
   sessionKey: string;
   chatHasAutoScrolled: boolean;
@@ -96,27 +97,38 @@ function isChatShellTab(tab: Tab): boolean {
 }
 
 export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unknown>) {
+  const terminalWorkspaceActive = host.activeWorkspace === "terminal";
   if (
-    isChatShellTab(host.tab) &&
+    (isChatShellTab(host.tab) || terminalWorkspaceActive) &&
     (changed.has("chatMessages") ||
+      (terminalWorkspaceActive && changed.has("terminalAssistant")) ||
       changed.has("chatToolMessages") ||
       changed.has("chatStream") ||
       changed.has("chatLoading") ||
+      changed.has("chatRunId") ||
+      changed.has("chatRunPhase") ||
+      changed.has("activeWorkspace") ||
       changed.has("tab") ||
       changed.has("sessionKey"))
   ) {
     const forcedByTab = changed.has("tab");
+    const enteringTerminalWorkspace =
+      changed.has("activeWorkspace") && terminalWorkspaceActive;
     const forcedByLoad =
       changed.has("chatLoading") && changed.get("chatLoading") === true && !host.chatLoading;
     const switchedSession = changed.has("sessionKey");
     // Opening or switching a session: treat like first paint so we scroll to newest messages.
     // Otherwise scheduleChatScroll(force) is ignored after chatHasAutoScrolled is true once.
-    if (switchedSession || forcedByLoad) {
+    if (switchedSession || forcedByLoad || enteringTerminalWorkspace) {
       resetChatScroll(host as unknown as Parameters<typeof resetChatScroll>[0]);
     }
     scheduleChatScroll(
       host as unknown as Parameters<typeof scheduleChatScroll>[0],
-      forcedByTab || forcedByLoad || switchedSession || !host.chatHasAutoScrolled,
+      forcedByTab ||
+        forcedByLoad ||
+        switchedSession ||
+        enteringTerminalWorkspace ||
+        !host.chatHasAutoScrolled,
     );
   }
   if (

@@ -22,7 +22,7 @@ var referencedPreviewablePathPattern = regexp.MustCompile(
 )
 
 var referencedAbsolutePreviewablePathPattern = regexp.MustCompile(
-	`(?i)` + referencedPathDelimiters + `(/(?:[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*)\.(?:` + previewableFileExtensions + `))`,
+	`(?i)` + referencedPathDelimiters + `((?:[A-Za-z]:)?(?:[\\/][A-Za-z0-9._-]+)+\.(?:` + previewableFileExtensions + `))`,
 )
 
 var referencedHomePreviewablePathPattern = regexp.MustCompile(

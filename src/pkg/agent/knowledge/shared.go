@@ -97,6 +97,10 @@ func AcquireEngine(dataDir string, emb embeddings.Embedder) (*Engine, func(), er
 		if ent.refs > 0 {
 			ent.refs--
 		}
+		if ent.refs == 0 && ent.engine != nil {
+			_ = ent.engine.Close()
+			ent.engine = nil
+		}
 		ent.mu.Unlock()
 	}
 	return eng, release, nil
@@ -125,6 +129,7 @@ func ResetSharedEnginesForTests() {
 
 	for _, ent := range entries {
 		ent.mu.Lock()
+		ent.refs = 0
 		if ent.engine != nil {
 			_ = ent.engine.Close()
 			ent.engine = nil

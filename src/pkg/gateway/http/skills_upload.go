@@ -369,7 +369,7 @@ func (s *Server) handleEmployeeSkillsUpload(w http.ResponseWriter, r *http.Reque
 	// CORS: 允许跨域请求（UI 可能与 Gateway 不同源）
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Gateway-Token")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -581,7 +581,7 @@ func (s *Server) handleEmployeeSkillsUpload(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleEmployeeSkillsDelete(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Gateway-Token")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -81,6 +81,8 @@ type Context struct {
 	MCPTools func(ctx context.Context) ([]tool.Tool, error)
 	// InvokeMethod synchronously invokes a gateway method (used by agent tools). Set by server after registry is built.
 	InvokeMethod func(method string, params map[string]interface{}) (ok bool, payload interface{}, err *protocol.ErrorShape)
+	// TerminalExecutor runs commands in an already authenticated SSH PTY.
+	TerminalExecutor tools.TerminalExecutor
 	// HooksWake is called for POST /hooks/wake. If nil, hooks handler returns 501.
 	HooksWake func(text string, mode string)
 	// HooksAgent is called for POST /hooks/agent. Returns runId; if nil, hooks handler returns 501.

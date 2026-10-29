@@ -385,6 +385,20 @@ make build
 
 Gateway 默认 `http://127.0.0.1:18900`；前端经 `go:embed` 内嵌，浏览器直接访问 Control UI。
 
+### Windows 11：安装为手动启停的 Gateway 服务
+
+源码构建完成后，可用仓库脚本把 Gateway 注册为 Windows 服务。需要安装 Go、Node.js、Yarn 和 [NSSM](https://nssm.cc/)，并以管理员身份打开 PowerShell：
+
+```powershell
+.\scripts\windows-gateway-service.ps1 Build
+.\scripts\windows-gateway-service.ps1 Install -NssmPath "C:\path\to\nssm.exe"
+.\scripts\windows-gateway-service.ps1 Start
+.\scripts\windows-gateway-service.ps1 Status
+.\scripts\windows-gateway-service.ps1 Stop
+```
+
+服务默认手动启动，不会随 Windows 开机自动启动；`Install` 会提示输入当前 Windows 用户的密码，使服务继续使用该用户的 `%APPDATA%\openocta` 配置与数据。密码通过 Windows 服务 API 配置，不会作为命令行参数传递。所有服务管理命令都应在管理员 PowerShell 中执行。之后可使用 `Start`、`Stop`、`Restart`、`Status` 启停查看，也可在“服务”管理器中操作。Gateway 保持 Windows 默认的桌面运行模式，仅监听本机回环地址（`127.0.0.1:18900`），不会因改为服务而向局域网开放；日志位于 `%APPDATA%\openocta\logs`。启动服务前请先退出占用默认端口 `18900` 的 OpenOcta 桌面客户端。卸载服务：`.\scripts\windows-gateway-service.ps1 Uninstall -NssmPath "C:\path\to\nssm.exe"`。
+
 ### 开发模式
 
 ```bash

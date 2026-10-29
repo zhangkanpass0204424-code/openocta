@@ -52,6 +52,23 @@ func TestResolveCozeLoopSettingsDefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestResolveCozeLoopSettingsExplicitlyDisabled(t *testing.T) {
+	t.Setenv("COZELOOP_API_TOKEN", "env-token")
+	t.Setenv("COZELOOP_WORKSPACE_ID", "env-workspace")
+	falseVal, trueVal := false, true
+	token, workspace := "config-token", "config-workspace"
+	for _, cfg := range []*config.CozeLoopConfig{
+		{Enable: &falseVal},
+		{Enabled: &falseVal},
+		{Enable: &falseVal, Enabled: &trueVal, APIToken: &token, WorkspaceID: &workspace},
+	} {
+		enabled, _, _, _ := resolveCozeLoopSettings(&config.OpenOctaConfig{CozeLoop: cfg})
+		if enabled {
+			t.Fatal("explicit disable must override configured and environment credentials")
+		}
+	}
+}
+
 func TestResolveCozeLoopSettingsFromConfig(t *testing.T) {
 	t.Parallel()
 

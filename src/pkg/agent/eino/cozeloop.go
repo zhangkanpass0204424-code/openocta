@@ -81,6 +81,9 @@ func ShutdownCozeLoop(ctx context.Context) {
 func resolveCozeLoopSettings(cfg *config.OpenOctaConfig) (enabled bool, apiToken, workspaceID, apiBaseURL string) {
 	if cfg != nil && cfg.CozeLoop != nil {
 		cl := cfg.CozeLoop
+		if (cl.Enable != nil || cl.Enabled != nil) && !cl.IsEnabled() {
+			return false, "", "", ""
+		}
 		enabled = cl.IsEnabled()
 		if cl.APIToken != nil {
 			apiToken = strings.TrimSpace(*cl.APIToken)

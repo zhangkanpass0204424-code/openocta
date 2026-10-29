@@ -87,6 +87,7 @@ import { renderSetupWizard } from "./views/setup-wizard.ts";
 import { nativeAlert, nativeConfirm, nativePrompt } from "./native-dialog-bridge.ts";
 import { UNIX_OPENOCTA_WORKSPACE, WIN_OPENOCTA_WORKSPACE } from "./platform-paths.ts";
 import { t } from "./strings.js";
+import { renderTerminalWorkspace } from "./terminal-workspace.ts";
 
 /** 从 session key 提取数字员工 ID，如 agent:main:employee:xxx:run:uuid -> xxx */
 function extractEmployeeIdFromSessionKey(key: string): string | null {
@@ -548,6 +549,58 @@ function themeToggleLabel(mode: ThemeMode) {
 }
 
 export function renderApp(state: AppViewState) {
+  if (state.gatewayConnectionPending && !state.gatewayAuthRequired) {
+    return html`
+      <main class="gateway-login" role="status">
+        <div class="gateway-login__card">
+          <div class="gateway-login__brand">OpenOcta</div>
+          <p>正在验证网关连接…</p>
+        </div>
+      </main>
+    `;
+  }
+  if (state.gatewayAuthRequired) {
+    return html`
+      <main class="gateway-login">
+        <form
+          class="gateway-login__card"
+          @submit=${(event: SubmitEvent) => {
+            event.preventDefault();
+            const form = event.currentTarget as HTMLFormElement;
+            const input = form.elements.namedItem("gateway-password");
+            if (input instanceof HTMLInputElement) {
+              state.password = input.value;
+            }
+            state.gatewayAuthError = null;
+            state.connect();
+          }}
+        >
+          <div class="gateway-login__brand">OpenOcta</div>
+          <h1>登录控制台</h1>
+          <p>请输入网关密码或访问令牌以继续。</p>
+          <label for="gateway-password">密码</label>
+          <input
+            id="gateway-password"
+            name="gateway-password"
+            type="password"
+            autocomplete="current-password"
+            autofocus
+            required
+            @input=${(event: Event) => {
+              state.password = (event.currentTarget as HTMLInputElement).value;
+            }}
+          />
+          ${state.gatewayAuthError
+            ? html`<div class="gateway-login__error" role="alert">${state.gatewayAuthError}</div>`
+            : nothing}
+          <button class="btn primary" type="submit">登录</button>
+        </form>
+      </main>
+    `;
+  }
+  if (state.activeWorkspace === "terminal") {
+    return renderTerminalWorkspace(state);
+  }
   const presenceCount = state.presenceEntries.length;
   const sessionsCount = state.sessionsResult?.count ?? null;
   const cronNext = state.cronStatus?.nextWakeAtMs ?? null;
@@ -697,6 +750,28 @@ export function renderApp(state: AppViewState) {
           </div>
           <span class="topbar-version">${state.configSchemaVersion ?? "---"}</span>
         </div>
+        <nav class="workspace-switcher" aria-label="工作区">
+          <button
+            type="button"
+            class=${state.activeWorkspace === "agents" ? "is-active" : ""}
+            @click=${() => {
+              state.activeWorkspace = "agents";
+              state.setTab("message");
+            }}
+          >智能体          </button>
+          <button
+            type="button"
+            @click=${() => (state.activeWorkspace = "terminal")}
+          >终端管理</button>
+          <button
+            type="button"
+            class=${state.activeWorkspace === "knowledge" ? "is-active" : ""}
+            @click=${() => {
+              state.activeWorkspace = "knowledge";
+              state.setTab("knowledgeVault");
+            }}
+          >知识管理</button>
+        </nav>
         <nav class="top-tabs" aria-label="Primary navigation">
           ${[
             { tab: "message", label: "消息" },

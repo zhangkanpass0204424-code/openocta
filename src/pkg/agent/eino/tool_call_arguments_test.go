@@ -86,6 +86,102 @@ func TestRepairIncompleteToolCallMessages(t *testing.T) {
 	}
 }
 
+// A streaming tool reports its output in several chunks that share one
+// tool_call id. The provider rejects a request that answers one id twice
+// (HTTP 400 "invalid params"), so the chunks must be merged into one result.
+func TestRepairIncompleteToolCallMessagesMergesDuplicateIDs(t *testing.T) {
+	t.Parallel()
+	msgs := []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call_a", Type: "function", Function: schema.FunctionCall{Name: "execute", Arguments: "{}"}},
+			{ID: "call_b", Type: "function", Function: schema.FunctionCall{Name: "execute", Arguments: "{}"}},
+		}),
+		schema.ToolMessage("chunk one", "call_a", schema.WithToolName("execute")),
+		schema.ToolMessage("chunk two", "call_a", schema.WithToolName("execute")),
+		schema.ToolMessage("other call", "call_b", schema.WithToolName("execute")),
+	}
+	out := repairIncompleteToolCallMessages(msgs)
+
+	counts := map[string]int{}
+	for _, m := range out {
+		if m.Role == schema.Tool {
+			counts[m.ToolCallID]++
+		}
+	}
+	for id, n := range counts {
+		if n != 1 {
+			t.Fatalf("tool_call %q answered %d times, want 1: %#v", id, n, out)
+		}
+	}
+	if len(counts) != 2 {
+		t.Fatalf("expected 2 tool results, got %d: %#v", len(counts), out)
+	}
+	// The merged result keeps every chunk instead of dropping the extra one.
+	var merged string
+	for _, m := range out {
+		if m.Role == schema.Tool && m.ToolCallID == "call_a" {
+			merged = m.Content
+		}
+	}
+	if merged != "chunk onechunk two" {
+		t.Fatalf("expected merged content %q, got %q", "chunk onechunk two", merged)
+	}
+}
+
+// A tool result whose id was never declared is an orphan and must be dropped,
+// otherwise the provider rejects the request with HTTP 400.
+func TestRepairIncompleteToolCallMessagesDropsOrphanResult(t *testing.T) {
+	t.Parallel()
+	msgs := []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call_a", Type: "function", Function: schema.FunctionCall{Name: "execute", Arguments: "{}"}},
+		}),
+		schema.ToolMessage("orphan", "call_unknown", schema.WithToolName("execute")),
+	}
+	out := repairIncompleteToolCallMessages(msgs)
+	for _, m := range out {
+		if m.Role == schema.Tool && m.ToolCallID == "call_unknown" {
+			t.Fatalf("expected orphan tool result to be dropped: %#v", out)
+		}
+	}
+}
+
+// Every declared tool call must be answered exactly once: a result may not be
+// missing (the provider answers 500) and no id may be answered twice (400).
+func TestPrepareSchemaMessagesForModelKeepsToolPairingOneToOne(t *testing.T) {
+	t.Parallel()
+	out := PrepareSchemaMessagesForModel([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call_a", Type: "function", Function: schema.FunctionCall{Name: "execute", Arguments: "{}"}},
+			{ID: "call_b", Type: "function", Function: schema.FunctionCall{Name: "execute", Arguments: "{}"}},
+		}),
+		schema.ToolMessage("first", "call_a"),
+		schema.ToolMessage("dup", "call_a"),
+	})
+	declared := map[string]int{}
+	answered := map[string]int{}
+	for _, m := range out {
+		switch m.Role {
+		case schema.Assistant:
+			for _, tc := range m.ToolCalls {
+				declared[tc.ID]++
+			}
+		case schema.Tool:
+			answered[m.ToolCallID]++
+		}
+	}
+	for id := range declared {
+		if answered[id] != 1 {
+			t.Fatalf("tool_call %q answered %d times, want 1: %#v", id, answered[id], out)
+		}
+	}
+	for id := range answered {
+		if declared[id] == 0 {
+			t.Fatalf("orphan tool result %q: %#v", id, out)
+		}
+	}
+}
+
 func TestBuildAgentMessagesRepairsInterruptedToolTurn(t *testing.T) {
 	t.Parallel()
 	msgs, err := BuildAgentMessages(types.Request{

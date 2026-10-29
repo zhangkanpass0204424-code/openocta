@@ -1,3 +1,5 @@
+import { TerminalAssistantController } from "./terminal-assistant-state.ts";
+import { TerminalWorkspaceController } from "./terminal-workspace-state.ts";
 import { LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import type { EventLogEntry } from "./app-events.ts";
@@ -74,6 +76,8 @@ import {
   handleUpdated,
 } from "./app-lifecycle.ts";
 import { renderApp } from "./app-render.ts";
+import { TerminalSessionView } from "./terminal-session-view.ts";
+import { gatewayHttpBase } from "./gateway-url.ts";
 import {
   exportLogs as exportLogsInternal,
   handleChatScroll as handleChatScrollInternal,
@@ -148,7 +152,43 @@ function resolveOnboardingMode(): boolean {
 @customElement("openclaw-app")
 export class OpenClawApp extends LitElement implements NativeDialogInvoker {
   @state() settings: UiSettings = loadSettings();
+  @state() activeWorkspace: "agents" | "terminal" | "knowledge" = "agents";
+  @state() terminalSidebarCollapsed = false;
+  @state() terminalAssistantWidth = 360;
+  readonly terminalAssistant = new TerminalAssistantController(this);
+  readonly terminalWorkspace = new TerminalWorkspaceController(this);
+  get terminalAssistantDraft() { return this.terminalAssistant.active.chatMessage; }
+  set terminalAssistantDraft(value: string) {
+    this.terminalAssistant.active.chatMessage = value;
+    this.requestUpdate();
+  }
+  @state() terminalSearchOpen = false;
+  @state() terminalHostDialogOpen = false;
+  get terminalHosts() { return this.terminalWorkspace.hosts; }
+  set terminalHosts(value: import("./terminal-workspace-state.ts").TerminalHost[]) {
+    this.terminalWorkspace.hosts = value;
+  }
+  @state() terminalActiveHostId: string | null = null;
+  @state() terminalHostInput = "";
+  @state() terminalPortInput = "22";
+  @state() terminalUserInput = "root";
+  @state() terminalPasswordInput = "";
+  @state() terminalPrivateKeyInput = "";
+  @state() terminalPassphraseInput = "";
+  @state() terminalHostFingerprint = "";
+  @state() terminalHostKeyConfirmed = false;
+  @state() terminalConnecting = false;
+  @state() terminalError: string | null = null;
+  @state() terminalSessionError: string | null = null;
+  @state() terminalContextPickerOpen = false;
+  get terminalCommandDraft() { return this.terminalWorkspace.command.text; }
+  get terminalCommandTargetHostId() { return this.terminalWorkspace.command.hostId; }
+  @state() terminalFeedback: string | null = null;
+  @state() terminalSection = "主机";
   @state() password = "";
+  @state() gatewayConnectionPending = true;
+  @state() gatewayAuthRequired = false;
+  @state() gatewayAuthError: string | null = null;
   @state() tab: Tab = "message";
   @state() onboarding = resolveOnboardingMode();
   @state() setupWizardActive = false;
@@ -729,6 +769,8 @@ export class OpenClawApp extends LitElement implements NativeDialogInvoker {
   @state() logsAtBottom = true;
 
   client: GatewayBrowserClient | null = null;
+  private terminalSessionView = new TerminalSessionView();
+  private terminalHostsLoading = false;
   approvalBannerPollInterval: number | null = null;
   private chatScrollFrame: number | null = null;
   private chatScrollTimeout: number | null = null;
@@ -776,6 +818,18 @@ export class OpenClawApp extends LitElement implements NativeDialogInvoker {
     }
   };
 
+  private terminalSessionsBeforeUnload = () => {
+    const apiBase = gatewayHttpBase(this.settings.gatewayUrl);
+    if (!apiBase) return;
+    for (const host of this.terminalHosts) {
+      if (!host.sessionId) continue;
+      void fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(host.sessionId)}`, {
+        method: "DELETE",
+        keepalive: true,
+      }).catch((error: unknown) => console.error("[terminal] unload cleanup failed:", error));
+    }
+  };
+
   createRenderRoot() {
     return this;
   }
@@ -785,7 +839,9 @@ export class OpenClawApp extends LitElement implements NativeDialogInvoker {
     registerNativeDialogInvoker(this);
     document.addEventListener("keydown", this.sessionOverflowEscapeHandler);
     window.addEventListener("beforeunload", this.knowledgeVaultBeforeUnload);
+    window.addEventListener("beforeunload", this.terminalSessionsBeforeUnload);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
+    void this.loadTerminalHosts();
     void this.initialiseDesktopWindowChrome();
   }
 
@@ -801,19 +857,99 @@ export class OpenClawApp extends LitElement implements NativeDialogInvoker {
     unregisterNativeDialogInvoker(this);
     document.removeEventListener("keydown", this.sessionOverflowEscapeHandler);
     window.removeEventListener("beforeunload", this.knowledgeVaultBeforeUnload);
+    window.removeEventListener("beforeunload", this.terminalSessionsBeforeUnload);
     this.teardownDesktopWindowChrome();
+    this.terminalSessionView.dispose();
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
     super.disconnectedCallback();
   }
 
+  private syncTerminalSessionView() {
+    if (this.activeWorkspace !== "terminal") {
+      this.terminalSessionView.dispose();
+      return;
+    }
+    const host = this.terminalHosts.find((item) => item.id === this.terminalActiveHostId);
+    const element = this.querySelector<HTMLElement>(".terminal-xterm-root");
+    const sessionId = host?.sessionId;
+    if (!host?.connected || !sessionId || !element) {
+      this.terminalSessionView.dispose();
+      return;
+    }
+    const apiBase = gatewayHttpBase(this.settings.gatewayUrl);
+    if (!apiBase) {
+      this.terminalSessionError = "未配置 Gateway 地址，无法连接终端";
+      return;
+    }
+    this.terminalSessionView.mount(element, apiBase, sessionId, (message) => {
+      const current = this.terminalHosts.find((item) => item.id === host.id);
+      if (!current?.connected || current.sessionId !== sessionId) return;
+      void fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        keepalive: true,
+      }).catch((error: unknown) => console.error("[terminal] failed to clean up closed session:", error));
+      this.terminalHosts = this.terminalHosts.map((item) =>
+        item.id === host.id ? { ...item, connected: false, sessionId: null } : item,
+      );
+      this.terminalSessionError = message;
+    });
+  }
+
+  private async loadTerminalHosts() {
+    if (this.terminalHostsLoading) return;
+    const apiBase = gatewayHttpBase(this.settings.gatewayUrl);
+    if (!apiBase) return;
+    this.terminalHostsLoading = true;
+    try {
+      const response = await fetch(`${apiBase}/api/terminal/hosts`);
+      if (!response.ok) throw new Error(`加载 Gateway 主机列表失败（HTTP ${response.status}）`);
+      const hosts = (await response.json()) as Array<{
+        id: string;
+        host: string;
+        port: number;
+        username: string;
+        fingerprint: string;
+      }>;
+      if (!Array.isArray(hosts)) throw new Error("Gateway 返回的主机列表格式无效");
+      this.terminalHosts = hosts.map((saved) => {
+        const connectedHost = this.terminalHosts.find((host) => host.id === saved.id);
+        return {
+          ...saved,
+          connected: connectedHost?.connected ?? false,
+          sessionId: connectedHost?.sessionId ?? null,
+          fingerprint: saved.fingerprint || null,
+        };
+      });
+      if (!this.terminalHosts.some((host) => host.id === this.terminalActiveHostId)) {
+        this.terminalActiveHostId = this.terminalHosts[0]?.id ?? null;
+      }
+      this.terminalSessionError = null;
+    } catch (error) {
+      console.error("[terminal] failed to load Gateway hosts:", error);
+      this.terminalSessionError = error instanceof Error ? error.message : "加载 Gateway 主机列表失败";
+    } finally {
+      this.terminalHostsLoading = false;
+    }
+  }
+
   protected updated(changed: Map<PropertyKey, unknown>) {
+    if (changed.has("terminalActiveHostId")) this.terminalAssistant.selectHost(this.terminalActiveHostId);
+    this.terminalAssistant.syncConnection(this.client, this.connected);
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
+    if (
+      (changed.has("activeWorkspace") && this.activeWorkspace === "terminal") ||
+      (changed.has("connected") && this.connected)
+    ) {
+      void this.loadTerminalHosts();
+    }
+    this.syncTerminalSessionView();
     if (
       this.setupWizardActive &&
       (changed.has("configForm") || changed.has("configSnapshot"))
     ) {
       refreshSetupWizardFromConfig(this as unknown as AppViewState);
     }
+
     if (
       !this.setupWizardActive &&
       !this.onboarding &&
@@ -831,6 +967,30 @@ export class OpenClawApp extends LitElement implements NativeDialogInvoker {
 
   connect() {
     connectGatewayInternal(this as unknown as Parameters<typeof connectGatewayInternal>[0]);
+  }
+
+  async handleTerminalAssistantSend(message: string) {
+    const activeHost = this.terminalHosts.find((host) => host.id === this.terminalActiveHostId);
+    const escapedHost = activeHost?.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const referencesActiveHost =
+      Boolean(activeHost?.connected) &&
+      Boolean(
+        escapedHost &&
+          new RegExp(`(^|\\s)@${escapedHost}(?=$|\\s|[,;!?)}])`, "i").test(message),
+      );
+    const recentOutput = referencesActiveHost ? this.terminalSessionView.getRecentOutput() : "";
+    const terminalContext = activeHost?.connected && activeHost.sessionId
+      ? `[终端执行上下文]\n主机：${activeHost.username}@${activeHost.host}\nOpenOcta SSH sessionId：${activeHost.sessionId}\n你可以使用 terminal_exec 工具执行非交互式命令。命令必须使用该 sessionId，并会在用户左侧终端中实时显示。`
+      : "";
+    const prompt = [message, terminalContext, recentOutput
+      ? `最近终端输出：\n\`\`\`text\n${recentOutput}\n\`\`\``
+      : ""].filter(Boolean).join("\n\n");
+    this.terminalAssistant.selectHost(this.terminalActiveHostId);
+    this.terminalAssistant.syncConnection(this.client, this.connected);
+    const conversation = this.terminalAssistant.active;
+    const sent = await this.terminalAssistant.send(prompt, activeHost?.connected ? activeHost.sessionId ?? undefined : undefined);
+    if (!sent && !conversation.chatMessage) conversation.chatMessage = message;
+    this.requestUpdate();
   }
 
   handleChatScroll(event: Event) {

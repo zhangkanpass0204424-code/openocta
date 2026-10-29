@@ -36,3 +36,26 @@ func TestDefaultGatewayPort(t *testing.T) {
 		t.Errorf("expected 18900, got %d", DefaultGatewayPort())
 	}
 }
+
+func TestResolveGatewayAddrWithBind(t *testing.T) {
+	tests := []struct {
+		name    string
+		runMode string
+		bind    string
+		custom  string
+		want    string
+	}{
+		{name: "desktop default remains loopback", runMode: "desktop", want: "127.0.0.1:18900"},
+		{name: "service default remains all interfaces", runMode: "service", want: ":18900"},
+		{name: "lan overrides desktop loopback", runMode: "desktop", bind: "lan", want: ":18900"},
+		{name: "custom bind overrides run mode", runMode: "desktop", bind: "custom", custom: "192.168.1.10", want: "192.168.1.10:18900"},
+		{name: "empty custom host preserves run mode", runMode: "desktop", bind: "custom", want: "127.0.0.1:18900"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveGatewayAddrWithBind(18900, tt.runMode, tt.bind, tt.custom); got != tt.want {
+				t.Fatalf("ResolveGatewayAddrWithBind() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

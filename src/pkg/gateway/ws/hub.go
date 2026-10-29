@@ -389,20 +389,23 @@ func (c *Client) handleConnect(id string, params interface{}) {
 	}
 
 	// Gateway token validation: when expected token is configured, require valid auth
-	expectedToken := ""
-	if c.Context != nil && c.Context.LoadConfigSnapshot != nil {
-		expectedToken = handlers.GetExpectedGatewayToken(c.Context.LoadConfigSnapshot)
+	expectedCredential := ""
+	authRequired := false
+	if c.Context != nil {
+		expectedCredential, authRequired = handlers.GetExpectedGatewayAuth(c.Context.LoadConfigSnapshot)
 	}
-	if expectedToken != "" {
-		gotToken := ""
+	if authRequired {
+		gotToken, gotPassword := "", ""
 		if cp.Auth != nil {
 			gotToken = strings.TrimSpace(cp.Auth.Token)
-			if gotToken == "" {
-				gotToken = strings.TrimSpace(cp.Auth.Password)
-			}
+			gotPassword = strings.TrimSpace(cp.Auth.Password)
 		}
-		if gotToken == "" || gotToken != expectedToken {
-			authMsg := "认证失败：网关令牌无效或未提供，请在 Overview 中配置正确的 Gateway Token"
+		if !handlers.GatewayCredentialMatches(gotToken, expectedCredential) &&
+			!handlers.GatewayCredentialMatches(gotPassword, expectedCredential) {
+			authMsg := "认证失败：网关密码或令牌无效或未提供，请检查 gateway.auth.password 或 Gateway Token 配置"
+			if expectedCredential == "" {
+				authMsg = "认证失败：网关密码模式已启用，但未配置 gateway.auth.password。请先在配置中设置密码。"
+			}
 			c.sendError(id, "invalid_gateway_token", authMsg)
 			// Do not write/close here: writePump owns Conn writes. Client will close after receiving the error.
 			return

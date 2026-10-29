@@ -1,4 +1,4 @@
-﻿package terminal
+package terminal
 
 import (
 	"context"
@@ -300,6 +300,46 @@ func (m *Manager) Output(id string, offset int64) (Output, error) {
 	if offset < 0 {
 		return Output{}, errors.New("offset must not be negative")
 	}
+	out, err := m.rawOutput(id, offset)
+	if err != nil {
+		return out, err
+	}
+	// Hold back a trailing partial wrapper echo or marker so the next poll can
+	// match it as a whole instead of leaking internal syntax to the user.
+	if !out.Closed {
+		if trimmed := trimPartialWrapper(out.Data); len(trimmed) != len(out.Data) {
+			out.Data = trimmed
+			out.Offset = offset + int64(len(trimmed))
+		}
+	}
+	out.Data = scrubTerminalOutput(out.Data)
+	return out, nil
+}
+
+// trimPartialWrapper cuts a trailing partial wrapper echo or completion marker
+// so that it is re-read together with the bytes that complete it.
+func trimPartialWrapper(data string) string {
+	cut := -1
+	if idx := strings.LastIndex(data, "\x15"); idx >= 0 && strings.HasPrefix(data[idx+1:], "eval ") {
+		if !evalWrapperEcho.MatchString(data[idx+1:]) {
+			cut = idx
+		}
+	}
+	if idx := strings.LastIndex(data, "\x1e"); idx >= 0 && strings.HasPrefix(data[idx+1:], "__OO_DONE_") {
+		if !markerFrame.MatchString(data[idx:]) && idx > cut {
+			cut = idx
+		}
+	}
+	if cut < 0 {
+		return data
+	}
+	return data[:cut]
+}
+
+// rawOutput returns the terminal stream without scrubbing. The execution loop
+// relies on it to observe the completion marker, which scrubTerminalOutput
+// intentionally removes from the stream shown to the user.
+func (m *Manager) rawOutput(id string, offset int64) (Output, error) {
 	state, err := m.get(id)
 	if err != nil {
 		return Output{}, err
@@ -319,7 +359,7 @@ func (m *Manager) Output(id string, offset int64) (Output, error) {
 		readEnd = int64(len(state.output))
 	}
 	return Output{
-		Data:   scrubTerminalOutput(string(state.output[start:readEnd])),
+		Data:   string(state.output[start:readEnd]),
 		Offset: offset + (readEnd - start),
 		Closed: state.closed,
 		Error:  state.err,
@@ -333,6 +373,7 @@ func (m *Manager) Input(id string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	// The terminal is locked only while an AI command is actually running.
 	if !state.execMu.TryLock() {
 		return ErrSessionBusy
 	}
@@ -340,11 +381,19 @@ func (m *Manager) Input(id string, data []byte) error {
 	state.mu.Lock()
 	closed, stdin, uncertain := state.closed, state.stdin, state.uncertain
 	state.mu.Unlock()
-	if uncertain {
-		return ErrExecutionUncertain
-	}
 	if closed {
 		return ErrSessionClosed
+	}
+	if uncertain {
+		// The previous AI command timed out and may still be running in the
+		// shell. Interrupt it so the human regains control of the terminal
+		// instead of being locked out until the session is reconnected.
+		state.mu.Lock()
+		state.uncertain = false
+		state.mu.Unlock()
+		if _, err := stdin.Write([]byte("\x03")); err != nil {
+			return err
+		}
 	}
 	_, err = stdin.Write(data)
 	return err
@@ -354,6 +403,55 @@ var ErrSessionBusy = errors.New("terminal is executing an AI command")
 var ErrExecutionUncertain = errors.New("previous execution did not finish; reconnect before sending more commands")
 var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 var markerOnly = regexp.MustCompile(`__OO_DONE_[a-z0-9]+:`)
+
+// evalWrapperEcho matches the wrapper command as the shell echoes it back,
+// e.g.  eval 'ls -la'; printf '\036__OO_DONE_<id>:%d\037\n' "$?"
+var evalWrapperEcho = regexp.MustCompile(`eval '(.*?)'; printf '\\036[^']*' "\$[^"]*"`)
+
+// markerFrame matches the framed completion marker emitted by the wrapper.
+var markerFrame = regexp.MustCompile("\x1e__OO_DONE_[a-z0-9]+:-?\\d+\x1f")
+
+// quoteShellArg wraps a command in single quotes for the POSIX shell.
+func quoteShellArg(command string) string {
+	return "'" + strings.ReplaceAll(command, "'", `'"'"'`) + "'"
+}
+
+// unquoteShellArg reverses quoteShellArg so the command can be displayed.
+func unquoteShellArg(quoted string) string {
+	return strings.ReplaceAll(quoted, `'"'"'`, `'`)
+}
+
+// rewriteWrapperEcho replaces every wrapper echo with the plain command it
+// carries, so the terminal shows the command instead of the internal syntax.
+// Output that followed the echo on the same line is kept on its own line.
+func rewriteWrapperEcho(line string) string {
+	matches := evalWrapperEcho.FindAllStringSubmatchIndex(line, -1)
+	if len(matches) == 0 {
+		return line
+	}
+	var b strings.Builder
+	prev := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		b.WriteString(line[prev:start])
+		b.WriteString(unquoteShellArg(line[match[2]:match[3]]))
+		rest := line[end:]
+		next := end
+		if strings.HasPrefix(rest, "\r") {
+			// Drop the carriage return the shell echoed for the wrapper line.
+			rest = rest[1:]
+			next = end + 1
+			if strings.TrimSpace(rest) != "" {
+				b.WriteString("\n")
+			}
+		} else if strings.TrimSpace(rest) != "" {
+			b.WriteString("\n")
+		}
+		prev = next
+	}
+	b.WriteString(line[prev:])
+	return b.String()
+}
 
 type ExecutionResult struct {
 	RequestID string `json:"requestId"`
@@ -386,21 +484,21 @@ func (m *Manager) ExecuteCommand(ctx context.Context, id, command string) (strin
 	}
 	defer state.execMu.Unlock()
 	state.mu.Lock()
-	closed, uncertain := state.closed, state.uncertain
+	closed := state.closed
 	offset := state.base + int64(len(state.output))
+	// A new execution supersedes a stale "uncertain" flag left behind by a
+	// previous timeout: the completion marker below uniquely identifies this run.
+	state.uncertain = false
 	state.mu.Unlock()
 	if closed {
 		return pack(ErrSessionClosed)
-	}
-	if uncertain {
-		return pack(ErrExecutionUncertain)
 	}
 	if err := ctx.Err(); err != nil {
 		return pack(err)
 	}
 	marker := "__OO_DONE_" + strings.ReplaceAll(result.RequestID, "-", "") + ":"
 	// eval runs in the current shell, unlike sh -c or a new SSH exec channel.
-	quoted := "'" + strings.ReplaceAll(command, "'", "'\"'\"'") + "'"
+	quoted := quoteShellArg(command)
 	wire := "\x15eval " + quoted + "; printf '\\036" + marker + "%d\\037\\n' \"$?\"\r"
 	if _, err = state.stdin.Write([]byte(wire)); err != nil {
 		return pack(err)
@@ -422,7 +520,7 @@ func (m *Manager) ExecuteCommand(ctx context.Context, id, command string) (strin
 			if offset < base {
 				result.Truncated = true
 			}
-			out, readErr := m.Output(id, offset)
+			out, readErr := m.rawOutput(id, offset)
 			if readErr != nil {
 				return pack(readErr)
 			}
@@ -540,10 +638,9 @@ func (m *Manager) Close() {
 	}
 }
 
-// scrubTerminalOutput removes wrapper commands and completion markers from terminal output.
-// Filters: Ctrl-U lines, eval/printf wrapper echoes, and __OO_DONE_ markers.
-// scrubTerminalOutput removes wrapper commands and completion markers from terminal output.
-// Filters: Ctrl-U lines, eval/printf wrapper echoes, and __OO_DONE_ markers.
+// scrubTerminalOutput removes the internal wrapper syntax from terminal output.
+// The wrapper echo is rewritten to the plain command the AI ran, so the user
+// can see what the AI is executing, and the completion marker is removed.
 func scrubTerminalOutput(data string) string {
 	if data == "" {
 		return data
@@ -551,6 +648,19 @@ func scrubTerminalOutput(data string) string {
 	lines := strings.Split(data, "\n")
 	var filtered []string
 	for _, line := range lines {
+		// Rewrite the wrapper echo into the plain command, e.g.
+		//   eval 'ls -la'; printf '\036__OO_DONE_<id>:%d\037\n' "$?"
+		// becomes
+		//   ls -la
+		// so the terminal shows the command instead of internal syntax.
+		line = rewriteWrapperEcho(line)
+		// Strip the completion marker frame. A line that only carried the marker
+		// disappears; output sharing the line with the marker is preserved.
+		stripped := markerFrame.ReplaceAllString(line, "")
+		if stripped != line && strings.TrimSpace(stripped) == "" {
+			continue
+		}
+		line = stripped
 		// Remove control characters used in wrapper protocol
 		cleaned := strings.ReplaceAll(line, "\x15", "")
 		cleaned = strings.ReplaceAll(cleaned, "\x1e", "")
@@ -566,21 +676,7 @@ func scrubTerminalOutput(data string) string {
 		if markerOnly.MatchString(cleaned) || strings.Contains(cleaned, "__OO_DONE_") {
 			continue
 		}
-		// Skip lines that are empty or whitespace after control char removal
-		if strings.TrimSpace(cleaned) == "" {
-			if len(filtered) == 0 || filtered[len(filtered)-1] != "" {
-				filtered = append(filtered, "")
-			}
-			continue
-		}
 		filtered = append(filtered, cleaned)
-	}
-	// Trim leading and trailing empty lines
-	for len(filtered) > 0 && filtered[0] == "" {
-		filtered = filtered[1:]
-	}
-	for len(filtered) > 0 && filtered[len(filtered)-1] == "" {
-		filtered = filtered[:len(filtered)-1]
 	}
 	return strings.Join(filtered, "\n")
 }

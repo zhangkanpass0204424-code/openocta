@@ -37,7 +37,8 @@ const CONFIG_FIELD_HELP: Record<Locale, Record<string, string>> = {
       'mDNS broadcast mode ("minimal" default, "full" includes cliPath/sshPort, "off" disables mDNS).',
     "gateway.auth.token":
       "Required by default for gateway access (unless using Tailscale Serve identity); required for non-loopback binds.",
-    "gateway.auth.password": "Required for Tailscale funnel.",
+    "gateway.auth.password":
+      "Set auth.mode to password and enter a password to require it when opening the browser Control UI.",
     "gateway.controlUi.basePath":
       "Optional URL prefix where the Control UI is served (e.g. /openclaw).",
     "gateway.controlUi.root":
@@ -352,7 +353,7 @@ const CONFIG_FIELD_HELP: Record<Locale, Record<string, string>> = {
       'mDNS 广播模式（"minimal" 默认，"full" 包含 cliPath/sshPort，"off" 禁用 mDNS）。',
     "gateway.auth.token":
       "默认情况下网关访问所需（除非使用 Tailscale Serve 身份）；非回环绑定需要。",
-    "gateway.auth.password": "Tailscale funnel 需要。",
+    "gateway.auth.password": "将 auth.mode 设为 password 并设置密码后，浏览器打开控制台时需要先登录。",
     "gateway.controlUi.basePath": "控制台 UI 服务的可选 URL 前缀（例如 /openclaw）。",
     "gateway.controlUi.root": "控制台 UI 资源的可选文件系统根目录（默认为 dist/control-ui）。",
     "gateway.controlUi.allowedOrigins":

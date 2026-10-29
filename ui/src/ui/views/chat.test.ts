@@ -5,7 +5,15 @@ const nativeConfirmMock = vi.hoisted(() => vi.fn());
 vi.mock("../native-dialog-bridge.ts", () => ({
   nativeConfirm: nativeConfirmMock,
 }));
-import { isChatRunActive, renderChat, validateChatAttachmentFile, CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_VIDEO_MAX_BYTES, type ChatProps } from "./chat.ts";
+import {
+  isChatRunActive,
+  loadAttachmentFromFile,
+  renderChat,
+  validateChatAttachmentFile,
+  CHAT_ATTACHMENT_MAX_BYTES,
+  CHAT_ATTACHMENT_VIDEO_MAX_BYTES,
+  type ChatProps,
+} from "./chat.ts";
 
 function createSessions(): SessionsListResult {
   return {
@@ -414,6 +422,17 @@ describe("chat view", () => {
 });
 
 describe("chat attachment validation", () => {
+  it("loads a validated file as a chat attachment", async () => {
+    const attachment = await loadAttachmentFromFile(
+      new File(["hello"], "notes.txt", { type: "text/plain" }),
+    );
+
+    expect(attachment.filename).toBe("notes.txt");
+    expect(attachment.mimeType).toBe("text/plain");
+    expect(attachment.sizeBytes).toBe(5);
+    expect(attachment.dataUrl).toBe("data:text/plain;base64,aGVsbG8=");
+  });
+
   it("rejects archives and oversize files", () => {
     expect(
       validateChatAttachmentFile({ name: "demo.zip", type: "application/zip", size: 100 } as File).ok,

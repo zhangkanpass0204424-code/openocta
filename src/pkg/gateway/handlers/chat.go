@@ -427,6 +427,15 @@ func upsertAssistantThinkingBlock(content []map[string]interface{}, thinking str
 	})
 }
 
+// toolResultAccumulator collects the streamed chunks of a single tool call so
+// the transcript can store one toolResult row per tool_call id.
+type toolResultAccumulator struct {
+	toolUseID string
+	toolName  string
+	output    string
+	isError   bool
+}
+
 func appendAssistantToolCallBlock(content []map[string]interface{}, evt stream.StreamEvent) []map[string]interface{} {
 	toolID := strings.TrimSpace(evt.ToolUseID)
 	toolName := strings.TrimSpace(evt.Name)
@@ -2236,6 +2245,17 @@ func ChatSendHandler(opts HandlerOpts) error {
 					}
 				}
 			}
+			terminalSessionID, _ := opts.Params["terminalSessionId"].(string)
+			terminalSessionID = strings.TrimSpace(terminalSessionID)
+			terminalSession := strings.HasPrefix(strings.ToLower(strings.TrimSpace(sessionKey)), "custom:terminal-")
+			if terminalSession {
+				terminalHint := "你正在 OpenOcta 终端 AI 会话中。严禁使用外部 ssh.exe、Git SSH、ASKPASS、PowerShell、OCR 或用户未提供的其他终端。需要执行命令时，必须调用 terminal_exec，并使用用户上下文中提供的 sessionId；该命令会显示在用户左侧已打开的 SSH 终端中，工具返回的输出就是该终端的执行结果。如果 terminal_exec 不可用，明确告诉用户无法执行，不得声称命令已经执行。"
+				if systemPromptOverrides != "" {
+					systemPromptOverrides += "\n\n" + terminalHint
+				} else {
+					systemPromptOverrides = terminalHint
+				}
+			}
 			runtimeFP := chatRuntimeFingerprint(
 				projectRoot,
 				agentID,
@@ -2247,6 +2267,7 @@ func ChatSendHandler(opts HandlerOpts) error {
 				runResources.WebSearch,
 				systemPromptOverrides,
 			)
+			runtimeFP += fmt.Sprintf("|terminal-exec-v2=%t|target=%s", terminalSession, terminalSessionID)
 
 			poolAcquireStart := time.Now()
 			rt, releasePooledRT, err := runtime.DefaultPool().Acquire(sessionKey, runtimeFP, func() (*runtime.Runtime, func(), error) {
@@ -2254,7 +2275,14 @@ func ChatSendHandler(opts HandlerOpts) error {
 				if ctxForBroadcast != nil && ctxForBroadcast.InvokeMethod != nil {
 					invoker = &gatewayInvokerAdapter{invoke: ctxForBroadcast.InvokeMethod}
 				}
+				var terminalExecutor tools.TerminalExecutor
+				if ctxForBroadcast != nil && terminalSession && terminalSessionID != "" {
+					terminalExecutor = ctxForBroadcast.TerminalExecutor
+				}
 				agentTools := tools.DefaultToolsWithInvoker(invoker)
+				if terminalExecutor != nil {
+					agentTools = append(agentTools, tools.TerminalExecTool{Executor: terminalExecutor, Allow: true, SessionID: terminalSessionID})
+				}
 				agentTools = AppendLocalAgentToolsForSession(agentTools, runtimeConfig, agentID, os.Getenv)
 
 				toolOrder := make([]string, 0, len(agentTools))
@@ -2569,6 +2597,12 @@ func ChatSendHandler(opts HandlerOpts) error {
 			turnHasA2UI := false
 			var pendingToolResultLines []interface{}
 			assistantToolTurnPersisted := false
+			// Streaming tools emit their output in several chunks, each arriving
+			// as its own tool_result event for the same tool_call id. Accumulate
+			// the chunks per id so the transcript stores one row per tool call
+			// (duplicate ids make providers reject the next request with 400).
+			toolResultAcc := make(map[string]*toolResultAccumulator)
+			var toolResultOrder []string
 			appendToolResultTranscript := func(line interface{}) {
 				if assistantToolTurnPersisted {
 					if err := session.AppendTranscriptLine(transcriptPath, line); err != nil {
@@ -2585,6 +2619,58 @@ func ChatSendHandler(opts HandlerOpts) error {
 					}
 				}
 				pendingToolResultLines = nil
+			}
+			// flushToolResults writes one transcript row per tool call. A streaming
+			// tool emits its output in several chunks, each arriving as its own
+			// tool_result event for the same tool_call id; writing one row per
+			// chunk duplicates that id and makes providers reject every later
+			// request with HTTP 400.
+			//
+			// Callers must flush before writing the next assistant row: tool
+			// results belong after the assistant turn that declared them and
+			// before the next assistant turn.
+			flushToolResults := func() {
+				for _, id := range toolResultOrder {
+					acc := toolResultAcc[id]
+					if acc == nil {
+						continue
+					}
+					delete(toolResultAcc, id)
+					outputStr := acc.output
+					attachBlocks := tools.AttachmentBlocksFromDeliverableToolOutput(acc.toolName, outputStr, projectRoot)
+					if !acc.isError {
+						assistantContent = append(assistantContent, attachBlocks...)
+					}
+					parentID := lastMessageID
+					msgID := uuid.New().String()[:8]
+					lastMessageID = msgID
+					ts := time.Now().UTC().Format(time.RFC3339)
+					tsMs := time.Now().UnixMilli()
+					toolResultContent := []map[string]interface{}{
+						{"type": "text", "text": tools.StripOpenOctaAttachmentsMarker(outputStr)},
+					}
+					if !acc.isError {
+						toolResultContent = append(toolResultContent, attachBlocks...)
+					}
+					line := map[string]interface{}{
+						"type":      "message",
+						"id":        msgID,
+						"parentId":  parentID,
+						"timestamp": ts,
+						"message": map[string]interface{}{
+							"role":       "toolResult",
+							"toolCallId": acc.toolUseID,
+							"toolName":   acc.toolName,
+							"content":    toolResultContent,
+							"isError":    acc.isError,
+							"timestamp":  tsMs,
+						},
+					}
+					if err := session.AppendTranscriptLine(transcriptPath, line); err != nil {
+						chatLog.Warn("append toolResult to transcript failed path=%s err=%v", transcriptPath, err)
+					}
+				}
+				toolResultOrder = nil
 			}
 			persistAssistantToolTurn := func(content []map[string]interface{}) {
 				if !assistantContentHasToolCalls(content) {
@@ -2615,6 +2701,9 @@ func ChatSendHandler(opts HandlerOpts) error {
 					},
 				)
 				assistantContent = tools.MergeDeliverableAttachmentBlocks(assistantContent, projectRoot)
+				// Tool results belong after the assistant turn that declared them and
+				// before the next assistant turn, so flush them before publishing.
+				flushToolResults()
 				if snap, ok := publishAssistantSnapshot(assistantSnapshotParams{
 					ctx:               ctxForBroadcast,
 					runId:             runId,
@@ -2776,6 +2865,27 @@ func ChatSendHandler(opts HandlerOpts) error {
 							assistantContent = append(assistantContent, block)
 						}
 					}
+					// A streaming tool emits its output in several chunks, each
+					// arriving as its own tool_result event for the same tool_call
+					// id. Persisting one transcript row per chunk duplicates that
+					// id, and OpenAI-compatible providers then reject every
+					// later request with HTTP 400. Accumulate the chunks of one
+					// call and write a single row for it.
+					if toolUseID != "" {
+						if acc, ok := toolResultAcc[toolUseID]; ok {
+							acc.output += outputStr
+							acc.isError = acc.isError || isErr
+							break
+						}
+						toolResultAcc[toolUseID] = &toolResultAccumulator{
+							toolUseID: toolUseID,
+							toolName:  toolName,
+							output:    outputStr,
+							isError:   isErr,
+						}
+						toolResultOrder = append(toolResultOrder, toolUseID)
+						break
+					}
 					parentID := lastMessageID
 					msgID := uuid.New().String()[:8]
 					lastMessageID = msgID
@@ -2845,6 +2955,9 @@ func ChatSendHandler(opts HandlerOpts) error {
 						turnHasA2UI = true
 					}
 					assistantContent = tools.MergeDeliverableAttachmentBlocks(assistantContent, projectRoot)
+					// Tool results belong after the assistant turn that declared them
+					// and before the next assistant turn, so flush them first.
+					flushToolResults()
 					if len(assistantContent) > 0 {
 						parentID := lastMessageID
 						msgID := uuid.New().String()[:8]
@@ -3003,6 +3116,7 @@ func ChatSendHandler(opts HandlerOpts) error {
 					if stopReason == "" {
 						stopReason = "cancelled"
 					}
+					flushToolResults()
 					if snap, ok := publishAssistantSnapshot(assistantSnapshotParams{
 						ctx:               ctxForBroadcast,
 						runId:             runId,
@@ -3025,6 +3139,7 @@ func ChatSendHandler(opts HandlerOpts) error {
 					assistantContent = nil
 					textBuf.Reset()
 				}
+				flushToolResults()
 				if assistantToolTurnPersisted {
 					flushPendingToolResultTranscript()
 				}
@@ -3061,6 +3176,7 @@ func ChatSendHandler(opts HandlerOpts) error {
 					},
 				)
 				assistantContent = tools.MergeDeliverableAttachmentBlocks(assistantContent, projectRoot)
+				flushToolResults()
 				if snap, ok := publishAssistantSnapshot(assistantSnapshotParams{
 					ctx:               ctxForBroadcast,
 					runId:             runId,

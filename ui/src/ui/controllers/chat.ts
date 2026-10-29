@@ -311,6 +311,7 @@ export async function sendChatMessage(
   attachments?: ChatAttachment[],
   modelRef?: string | null,
   resources?: ChatSessionResources,
+  terminalSessionId?: string,
 ): Promise<string | null> {
   if (!state.client || !state.connected) {
     return null;
@@ -423,6 +424,7 @@ export async function sendChatMessage(
 
   try {
     await state.client.request("chat.send", {
+      terminalSessionId,
       sessionKey: sendSessionKey,
       message: msg,
       deliver: false,

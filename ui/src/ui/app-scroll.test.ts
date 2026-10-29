@@ -135,6 +135,24 @@ describe("scheduleChatScroll", () => {
     expect(container.scrollTop).toBe(container.scrollHeight);
   });
 
+  it("uses the terminal assistant message list when the standard chat thread is absent", async () => {
+    const { host, container } = createScrollHost({
+      scrollHeight: 2000,
+      scrollTop: 1600,
+      clientHeight: 400,
+    });
+    host.querySelector = vi.fn((selector: string) =>
+      selector === ".terminal-ai-messages" ? container : null,
+    );
+
+    scheduleChatScroll(host);
+    await host.updateComplete;
+
+    expect(host.querySelector).toHaveBeenCalledWith(".chat-thread");
+    expect(host.querySelector).toHaveBeenCalledWith(".terminal-ai-messages");
+    expect(container.scrollTop).toBe(container.scrollHeight);
+  });
+
   it("does NOT scroll when user is scrolled up and no force", async () => {
     const { host, container } = createScrollHost({
       scrollHeight: 2000,

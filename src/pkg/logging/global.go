@@ -4,6 +4,7 @@ package logging
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -107,7 +108,19 @@ func (g *globalState) logWithPrefix(prefix string, level int, levelName, format 
 	if level > g.consoleLevel && level > g.level {
 		return
 	}
-	msg := fmt.Sprintf(format, args...)
+
+	msg := format
+	if len(args) > 0 {
+		if strings.Contains(format, "%") {
+			msg = fmt.Sprintf(format, args...)
+		} else {
+			slices := make([]string, 0, len(args))
+			for _, a := range args {
+				slices = append(slices, fmt.Sprint(a))
+			}
+			msg = format + " " + strings.Join(slices, " ")
+		}
+	}
 	if prefix != "" {
 		msg = prefix + " " + msg
 	}

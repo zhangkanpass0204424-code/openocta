@@ -54,3 +54,9 @@ weibo_*.md
 .vscode/
 *.swp
 *.swo
+
+# Local scratch artifacts
+/down/
+/NUL
+/src/NUL
+/ui/cur.json

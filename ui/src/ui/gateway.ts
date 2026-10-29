@@ -55,6 +55,7 @@ export type GatewayBrowserClientOptions = {
   mode?: GatewayClientMode;
   instanceId?: string;
   onHello?: (hello: GatewayHelloOk) => void;
+  onAuthRequired?: (message: string) => void;
   onEvent?: (evt: GatewayEventFrame) => void;
   onClose?: (info: { code: number; reason: string }) => void;
   onGap?: (info: { expected: number; received: number }) => void;
@@ -265,7 +266,15 @@ export class GatewayBrowserClient {
           clearDeviceAuthToken({ deviceId: deviceIdentity.deviceId, role });
         }
         const msg = err instanceof Error ? err.message : String(err);
-        this.ws?.close(CONNECT_FAILED_CLOSE_CODE, msg || "connect failed");
+        const isAuthFailure = /认证失败|invalid_gateway_token/i.test(msg);
+        if (isAuthFailure) {
+          this.closed = true;
+          this.opts.onAuthRequired?.(msg);
+        }
+        this.ws?.close(
+          CONNECT_FAILED_CLOSE_CODE,
+          isAuthFailure ? "authentication failed" : "connect failed",
+        );
       });
   }
 

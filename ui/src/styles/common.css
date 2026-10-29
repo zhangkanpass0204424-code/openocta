@@ -2,6 +2,65 @@
    Common Components
    =========================================== */
 
+.gateway-login {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+.gateway-login__card {
+  display: grid;
+  gap: 14px;
+  width: min(100%, 360px);
+  padding: 32px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-xl);
+}
+
+.gateway-login__brand {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.gateway-login__card h1,
+.gateway-login__card p {
+  margin: 0;
+}
+
+.gateway-login__card p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.gateway-login__card label {
+  margin-bottom: -10px;
+  font-size: 13px;
+}
+
+.gateway-login__card input {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-content);
+  color: var(--text-primary);
+}
+
+.gateway-login__error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .input,
 .date,
 .select,

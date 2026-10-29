@@ -2,6 +2,7 @@ package paths
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -242,6 +243,21 @@ func ResolveRunMode(env func(string) string, gatewayModeFromConfig *string) stri
 // - desktop: 127.0.0.1:port (loopback-only)
 // - service: :port (all interfaces)
 func ResolveGatewayAddr(port int, runMode string) string {
+	return ResolveGatewayAddrWithBind(port, runMode, "", "")
+}
+
+// ResolveGatewayAddrWithBind resolves the listen address, honoring an explicit
+// gateway bind setting while preserving run-mode defaults for auto/unspecified.
+func ResolveGatewayAddrWithBind(port int, runMode, bind, customHost string) string {
+	switch strings.ToLower(strings.TrimSpace(bind)) {
+	case "lan":
+		return fmt.Sprintf(":%d", port)
+	case "custom":
+		host := strings.TrimSpace(customHost)
+		if host != "" {
+			return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(runMode), "desktop") {
 		return fmt.Sprintf("127.0.0.1:%d", port)
 	}

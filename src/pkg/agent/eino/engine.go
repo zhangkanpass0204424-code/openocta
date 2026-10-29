@@ -81,17 +81,30 @@ func NewEngine(ctx context.Context, cfg BuildConfig) (*Engine, error) {
 	}
 
 	var dynamicTools []einotool.BaseTool
+	var pinnedTools []einotool.BaseTool
 	if !cfg.DisableTools {
-		dynamicTools = WrapTools(cfg.Tools)
+		for _, t := range cfg.Tools {
+			if t != nil && t.Name() == "terminal_exec" {
+				pinnedTools = append(pinnedTools, WrapTool(t))
+			} else if t != nil {
+				dynamicTools = append(dynamicTools, WrapTool(t))
+			}
+		}
 		if cfg.Knowledge != nil && cfg.Knowledge.Enabled {
 			dynamicTools = append(dynamicTools, KnowledgeTools(cfg.Knowledge)...)
 		}
 	}
 
 	settings := resolveContextMiddlewareSettings(cfg)
-	useToolSearch := settings.enableToolSearch && len(dynamicTools) >= minToolSearchTools
+	useToolSearch := settings.enableToolSearch && len(dynamicTools) >= minToolSearchTools && len(pinnedTools) == 0
+	searchTools := dynamicTools
+	if len(pinnedTools) > 0 {
+		// Tool-search middleware replaces the model's tools; terminal runs need
+		// the bound executor available immediately, without a discovery step.
+		searchTools = nil
+	}
 
-	handlers, err := buildAgentMiddlewares(ctx, cfg, cm, fsBackend, cfg.SkillsDir, dynamicTools)
+	handlers, err := buildAgentMiddlewares(ctx, cfg, cm, fsBackend, cfg.SkillsDir, searchTools)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +116,9 @@ func NewEngine(ctx context.Context, cfg BuildConfig) (*Engine, error) {
 	// Last BeforeChatModel hook: repair tool-call turns after reduction/summarization.
 	handlers = append(handlers, newToolTurnRepairMiddleware())
 
-	var baseTools []einotool.BaseTool
+	baseTools := append([]einotool.BaseTool(nil), pinnedTools...)
 	if !cfg.DisableTools && !useToolSearch {
-		baseTools = dynamicTools
+		baseTools = append(baseTools, dynamicTools...)
 	}
 
 	maxIter := cfg.MaxIteration

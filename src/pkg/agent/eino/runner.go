@@ -36,10 +36,12 @@ func (e *Engine) Run(ctx context.Context, req types.Request) (*types.Response, e
 		if evt.Err != nil {
 			return nil, evt.Err
 		}
-		if evt.Output != nil && evt.Output.MessageOutput != nil && evt.Output.MessageOutput.Message != nil {
-			if evt.Output.MessageOutput.Role == "assistant" && evt.Output.MessageOutput.Message.Content != "" {
-				textParts = append(textParts, evt.Output.MessageOutput.Message.Content)
-			}
+		msg, _, err := adk.GetMessage(evt)
+		if err != nil {
+			return nil, err
+		}
+		if msg != nil && msg.Role == "assistant" && msg.Content != "" {
+			textParts = append(textParts, msg.Content)
 		}
 	}
 	out := strings.Join(textParts, "")

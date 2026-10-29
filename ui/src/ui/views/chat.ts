@@ -375,7 +375,7 @@ function inferAttachmentKind(mimeType: string, filename?: string): "image" | "vi
   return "file";
 }
 
-function loadAttachmentFromFile(file: File): Promise<ChatAttachment> {
+export function loadAttachmentFromFile(file: File): Promise<ChatAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => {

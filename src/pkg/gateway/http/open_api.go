@@ -167,7 +167,7 @@ func (s *Server) handleOpenAPICompletion(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	openAPILog.Info("open completion finished", "keyId", rec.ID, "model", model, "tokens", out.TotalTokens)
+	openAPILog.Info("open completion finished keyId=%s model=%s tokens=%d", rec.ID, model, out.TotalTokens)
 	writeOpenAPIJSON(w, http.StatusOK, map[string]interface{}{
 		"id":      "open-" + rec.ID,
 		"object":  "chat.completion",
