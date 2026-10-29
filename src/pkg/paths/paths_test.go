@@ -47,9 +47,20 @@ func TestResolveGatewayAddrWithBind(t *testing.T) {
 	}{
 		{name: "desktop default remains loopback", runMode: "desktop", want: "127.0.0.1:18900"},
 		{name: "service default remains all interfaces", runMode: "service", want: ":18900"},
+		{name: "auto keeps run mode", runMode: "desktop", bind: "auto", want: "127.0.0.1:18900"},
+		{name: "auto keeps service mode", runMode: "service", bind: "auto", want: ":18900"},
 		{name: "lan overrides desktop loopback", runMode: "desktop", bind: "lan", want: ":18900"},
+		{name: "lan alias 0.0.0.0 resolves all interfaces", runMode: "desktop", bind: "0.0.0.0", want: ":18900"},
+		{name: "lan alias :: resolves all interfaces", runMode: "desktop", bind: "::", want: ":18900"},
+		{name: "lan alias * resolves all interfaces", runMode: "desktop", bind: "*", want: ":18900"},
+		{name: "loopback resolves loopback", runMode: "service", bind: "loopback", want: "127.0.0.1:18900"},
+		{name: "loopback alias localhost resolves loopback", runMode: "service", bind: "localhost", want: "127.0.0.1:18900"},
+		{name: "loopback alias 127.0.0.1 resolves loopback", runMode: "service", bind: "127.0.0.1", want: "127.0.0.1:18900"},
+		{name: "loopback alias ::1 resolves loopback", runMode: "service", bind: "::1", want: "[::1]:18900"},
+		{name: "tailnet listens on all interfaces", runMode: "desktop", bind: "tailnet", want: ":18900"},
 		{name: "custom bind overrides run mode", runMode: "desktop", bind: "custom", custom: "192.168.1.10", want: "192.168.1.10:18900"},
 		{name: "empty custom host preserves run mode", runMode: "desktop", bind: "custom", want: "127.0.0.1:18900"},
+		{name: "explicit host is used as listen address", runMode: "desktop", bind: "192.168.1.20", want: "192.168.1.20:18900"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

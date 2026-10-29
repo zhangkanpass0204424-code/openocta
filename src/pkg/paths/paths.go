@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -246,17 +247,35 @@ func ResolveGatewayAddr(port int, runMode string) string {
 	return ResolveGatewayAddrWithBind(port, runMode, "", "")
 }
 
-// ResolveGatewayAddrWithBind resolves the listen address, honoring an explicit
-// gateway bind setting while preserving run-mode defaults for auto/unspecified.
+// ResolveGatewayAddrWithBind resolves the listen address, honoring the gateway
+// bind settings while preserving the run-mode default for auto/unspecified.
+//
+// bind supports:
+//   - auto / empty            => fall back to the run mode default
+//   - loopback                => 127.0.0.1 only
+//   - lan                     => all interfaces
+//   - tailnet                 => all interfaces (Tailscale Serve/funnel forwards here)
+//   - custom                  => the host configured in customBindHost
+//   - any other non-empty value => treated as an explicit listen host
+//
+// The aliases localhost/127.0.0.1/::1 and 0.0.0.0/::/* are accepted as well.
 func ResolveGatewayAddrWithBind(port int, runMode, bind, customHost string) string {
+	portText := strconv.Itoa(port)
 	switch strings.ToLower(strings.TrimSpace(bind)) {
-	case "lan":
+	case "", "auto":
+		// Keep the run-mode default.
+	case "loopback", "localhost", "127.0.0.1":
+		return net.JoinHostPort("127.0.0.1", portText)
+	case "::1":
+		return net.JoinHostPort("::1", portText)
+	case "lan", "0.0.0.0", "::", "*", "tailnet":
 		return fmt.Sprintf(":%d", port)
 	case "custom":
-		host := strings.TrimSpace(customHost)
-		if host != "" {
-			return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+		if host := strings.TrimSpace(customHost); host != "" {
+			return net.JoinHostPort(host, portText)
 		}
+	default:
+		return net.JoinHostPort(strings.TrimSpace(bind), portText)
 	}
 	if strings.EqualFold(strings.TrimSpace(runMode), "desktop") {
 		return fmt.Sprintf("127.0.0.1:%d", port)
