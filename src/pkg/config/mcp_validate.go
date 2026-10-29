@@ -47,18 +47,21 @@ func ValidateMcpCommand(command string) error {
 		return fmt.Errorf("mcp command %q must not contain path separators; use a command name without path", cmd)
 	}
 
-	// Normalize: strip .exe/.cmd suffix on Windows for comparison
-	baseName := strings.ToLower(cmd)
-	baseName = strings.TrimSuffix(baseName, ".exe")
-	baseName = strings.TrimSuffix(baseName, ".cmd")
+	// Normalize: strip a Windows .exe/.cmd suffix without changing the case of
+	// the name, so the allowlist lookup stays case-sensitive.
+	baseName := cmd
+	if lower := strings.ToLower(baseName); strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".cmd") {
+		baseName = baseName[:len(baseName)-len(".exe")]
+	}
 
-	// Block shell interpreters (both Unix and Windows)
-	if BlockedMCPCommands[baseName] {
+	// Block shell interpreters (both Unix and Windows), case-insensitively so
+	// that names such as "BASH" or "POWERSHELL.EXE" are still rejected.
+	if BlockedMCPCommands[strings.ToLower(baseName)] {
 		return fmt.Errorf("mcp command %q is a shell interpreter; shell interpreters are not allowed as MCP server commands", cmd)
 	}
 
-	// Allowlist check — the command must be in the allowed set
-	if !AllowedMCPCommands[cmd] && !AllowedMCPCommands[baseName] {
+	// Allowlist check — the command must match the allowlist exactly.
+	if !AllowedMCPCommands[baseName] {
 		return fmt.Errorf("mcp command %q is not in the allowed list (allowed: npx, uvx, uv)", cmd)
 	}
 
